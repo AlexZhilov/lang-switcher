@@ -1,2 +1,3 @@
 #!/bin/sh
-exec "$HOME/.local/share/zorin-switcher/current/bin/python" "$HOME/.local/bin/zorin-switcher/zorin_switcher.py" --case
+# lang-switcher legacy wrapper
+exec "$HOME/.local/bin/lang-switcher" case

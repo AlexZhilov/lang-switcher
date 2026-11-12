@@ -10,5 +10,5 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 with tempfile.TemporaryDirectory(prefix='lang-switcher-runtime-check-') as directory:
     runtime = installer.make_runtime(Path(directory), offline=True)
-    installer.execute([runtime / 'bin/python', root / 'payload/zorin_switcher.py', '--help'])
+    installer.execute([runtime / 'bin/python', root / 'payload/switcher.py', '--help'])
 print('Temporary runtime checked and removed. Installed switcher and desktop settings unchanged.')

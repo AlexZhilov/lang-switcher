@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-PATH = Path(os.environ.get('ZORIN_SWITCHER_MODULE', ROOT / 'payload' / 'zorin_switcher.py'))
+PATH = Path(os.environ.get('LANG_SWITCHER_MODULE', ROOT / 'payload' / 'switcher.py'))
 spec = importlib.util.spec_from_file_location('switcher', PATH)
 switcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(switcher)

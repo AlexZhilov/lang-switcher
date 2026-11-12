@@ -169,6 +169,7 @@ def process_selection(change_case):
 @contextmanager
 def selection_lock():
     runtime = Path(os.environ.get('XDG_RUNTIME_DIR') or tempfile.gettempdir())
+    # Stable lock and D-Bus names preserve compatibility with older versions.
     path = runtime / f'zorin-switcher-{os.getuid()}.lock'
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
     try:
@@ -197,7 +198,7 @@ def main(argv=None):
                 return 0
             process_selection(args.case)
     except Exception as error:
-        print(f'Zorin Switcher: {error}', file=sys.stderr)
+        print(f'lang-switcher: {error}', file=sys.stderr)
         return 1
     return 0
 

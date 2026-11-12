@@ -1,6 +1,6 @@
 #!/bin/sh
 # lang-switcher managed command
-manager="$HOME/.local/share/zorin-switcher/manager.py"
+manager="$HOME/.local/share/lang-switcher/manager.py"
 action="${1:-status}"
 if [ "$#" -gt 0 ]; then shift; fi
 case "$action" in
@@ -9,7 +9,7 @@ case "$action" in
     restore)
         exec python3 "$manager" --restore "$@" ;;
     layout|case)
-        exec "$HOME/.local/share/zorin-switcher/current/bin/python" "$HOME/.local/bin/zorin-switcher/zorin_switcher.py" "--$action" "$@" ;;
+        exec "$HOME/.local/share/lang-switcher/current/bin/python" "$HOME/.local/lib/lang-switcher/switcher.py" "--$action" "$@" ;;
     completion)
         if [ "$#" -gt 1 ]; then
             printf '%s\n' 'Использование: lang-switcher completion bash' >&2

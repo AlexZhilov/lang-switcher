@@ -105,7 +105,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/AlexZhilov/lang-switcher/mas
 ```
 
 Вывод внешних команд сохраняется локально в
-`~/.local/share/zorin-switcher/logs/` с закрытыми правами. При ошибке путь к
+`~/.local/share/lang-switcher/logs/` с закрытыми правами. При ошибке путь к
 журналу выводится сразу; после успешной установки — через `status --verbose`.
 Цвета включаются автоматически в терминале. Для отключения: `NO_COLOR=1`.
 
@@ -114,7 +114,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/AlexZhilov/lang-switcher/mas
 Вернуть конкретную резервную копию:
 
 ```bash
-lang-switcher restore ~/.local/share/zorin-switcher/backups/ИМЯ_КОПИИ
+lang-switcher restore ~/.local/share/lang-switcher/backups/ИМЯ_КОПИИ
 ```
 
 `rollback` и `restore` возвращают сохранённый снимок настроек.
@@ -135,17 +135,27 @@ lang-switcher restore ~/.local/share/zorin-switcher/backups/ИМЯ_КОПИИ
 
 ## Где хранятся файлы
 
-Часть внутренних имён сохранена для обновления прежних установок:
+Новая установка использует следующие пути:
 
 ```text
 ~/.local/bin/lang-switcher
-~/.local/bin/switch_layout.sh
-~/.local/bin/switch_case.sh
-~/.local/bin/zorin-switcher/
+~/.local/lib/lang-switcher/
 ~/.local/share/gnome-shell/extensions/lang-switcher@local/
-~/.local/share/zorin-switcher/
+~/.local/share/lang-switcher/
 ```
 
-Резервные копии: `~/.local/share/zorin-switcher/backups/`.
+Код находится в `~/.local/lib/lang-switcher/`, Python-окружения, журналы
+и резервные копии — в `~/.local/share/lang-switcher/`.
+
+При обновлении прежние каталоги `zorin-switcher` автоматически переносятся.
+На их месте остаются ссылки для старых Python-окружений, команд и резервных
+копий; удалять эти ссылки вручную не следует. На новой установке старые пути
+не создаются. Старые `switch_layout.sh` и `switch_case.sh`, если они уже были,
+работают через новую команду; новые горячие клавиши вызывают `lang-switcher` напрямую.
+
+Исторические копии сохраняют исходные пути. Поэтому откат и удаление могут
+восстановить прежний скрипт через ссылки. Незнакомые файлы в перенесённых
+каталогах сохраняются. Если старый и новый каталоги уже существуют отдельно,
+установщик останавливает перенос без объединения или перезаписи содержимого.
 
 [Основная инструкция](../README.md) · [Безопасность](../SECURITY.md)

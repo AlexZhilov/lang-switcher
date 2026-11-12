@@ -74,7 +74,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(settings.raw, first)
         for path in settings.get(installer.MEDIA, 'custom-keybindings'):
             command = settings.get(installer.CUSTOM_SCHEMA + path, 'command')
-            self.assertEqual(len(__import__('shlex').split(command)), 1)
+            self.assertEqual(len(__import__('shlex').split(command)), 2)
+            self.assertIn(__import__('shlex').split(command)[1], ('layout', 'case'))
             self.assertIn(str(home), __import__('shlex').split(command)[0])
 
     def test_upgrade_reuses_old_paths_and_removes_only_known_duplicates(self):
@@ -112,11 +113,11 @@ class InstallerTests(unittest.TestCase):
             home = Path(temp)
             settings = FakeSettings()
             before = dict(settings.raw)
-            target = home / '.local/bin/zorin-switcher/zorin_switcher.py'
+            target = home / '.local/lib/lang-switcher/switcher.py'
             target.parent.mkdir(parents=True)
             target.write_text('old')
             target.chmod(0o750)
-            alias = home / '.local/share/zorin-switcher/current'
+            alias = home / '.local/share/lang-switcher/current'
             alias.parent.mkdir(parents=True)
             alias.symlink_to('previous runtime')
             payload = home / 'payload'
@@ -144,13 +145,13 @@ class InstallerTests(unittest.TestCase):
     def test_install_failure_rolls_back_active_script(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
-            old = home / '.local/bin/zorin-switcher/zorin_switcher.py'
+            old = home / '.local/lib/lang-switcher/switcher.py'
             old.parent.mkdir(parents=True)
             old.write_text('old version')
             settings = FakeSettings()
             original = dict(settings.raw)
             settings.fail_once = (installer.MEDIA, 'custom-keybindings')
-            runtime = home / '.local/share/zorin-switcher/runtimes/test-runtime'
+            runtime = home / '.local/share/lang-switcher/runtimes/test-runtime'
             runtime.mkdir(parents=True)
             with patch.object(installer, 'preflight', return_value='GNOME Shell 43.9'), \
                  patch.object(installer, 'missing_packages', return_value=[]), \
@@ -160,7 +161,7 @@ class InstallerTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'simulated'):
                     installer.install(settings, home, True)
             self.assertEqual(old.read_text(), 'old version')
-            self.assertFalse((home / '.local/share/zorin-switcher/current').exists())
+            self.assertFalse((home / '.local/share/lang-switcher/current').exists())
             for key, value in original.items():
                 self.assertEqual(settings.raw[key], value)
             for key in set(settings.raw) - set(original):
@@ -169,7 +170,7 @@ class InstallerTests(unittest.TestCase):
     def test_install_upgrade_and_uninstall_restore_original(self):
         with tempfile.TemporaryDirectory(prefix='lang switcher ') as temp:
             home = Path(temp)
-            old = home / '.local/bin/zorin-switcher/zorin_switcher.py'
+            old = home / '.local/lib/lang-switcher/switcher.py'
             old.parent.mkdir(parents=True)
             old.write_text('original pre-install script')
             settings = FakeSettings()
@@ -201,8 +202,8 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse((home / '.local/bin/lang-switcher').exists())
             self.assertFalse((home / '.local/share/bash-completion/completions/lang-switcher').exists())
             self.assertFalse((home / '.bashrc').exists())
-            self.assertFalse((home / '.local/share/zorin-switcher/current').exists())
-            self.assertEqual(list((home / '.local/share/zorin-switcher/runtimes').iterdir()), [])
+            self.assertFalse((home / '.local/share/lang-switcher/current').exists())
+            self.assertEqual(list((home / '.local/share/lang-switcher/runtimes').iterdir()), [])
             for key, value in original.items():
                 self.assertEqual(settings.raw[key], value)
 

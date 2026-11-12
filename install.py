@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-user installation of Zorin Switcher; sudo is used only for APT."""
+"""Per-user installation of lang-switcher; sudo is used only for APT."""
 import argparse
 import ast
 from contextlib import contextmanager
@@ -13,8 +13,10 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parent
@@ -71,9 +73,88 @@ class Console:
 UI = Console()
 
 
+def layout_pairs(home):
+    return ((home / '.local/share/zorin-switcher', home / '.local/share/lang-switcher'),
+            (home / '.local/bin/zorin-switcher', home / '.local/lib/lang-switcher'))
+
+
+def data_root(home):
+    old, new = layout_pairs(home)[0]
+    return new if new.exists() or not old.exists() else old
+
+
+def layout_plan(home):
+    """Validate every root before creating directories or moving anything."""
+    moves = []
+    for old, new in layout_pairs(home):
+        for path in (old, new):
+            if not path.parent.resolve().is_relative_to(home.resolve()):
+                raise InstallError(f'Каталог программы выходит за пределы HOME: {path}')
+            if path.is_symlink():
+                if path != old or path.resolve() != new or not new.is_dir():
+                    raise InstallError(f'Недопустимая ссылка каталога программы: {path}')
+            elif path.exists() and (not path.is_dir() or path.stat().st_uid != os.getuid()):
+                raise InstallError(f'Недопустимый каталог программы: {path}')
+        if old.is_dir() and not old.is_symlink():
+            if new.exists():
+                raise InstallError(f'Найдены два отдельных каталога: {old} и {new}. Перенос остановлен.')
+            moves.append((old, new))
+    return moves
+
+
+@contextmanager
+def migration_lock():
+    # Stable name shared with older switchers: do not move code mid-selection.
+    runtime = Path(os.environ.get('XDG_RUNTIME_DIR') or tempfile.gettempdir())
+    path = runtime / f'zorin-switcher-{os.getuid()}.lock'
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW |
+                         os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise InstallError('Недопустимый файл блокировки переключателя')
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise InstallError('Переключатель обрабатывает текст. Повторите установку.') from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def migrate_layout(home):
+    moves = layout_plan(home)
+    if not moves:
+        return
+    completed = []
+    with migration_lock():
+        try:
+            for old, new in moves:
+                new.parent.mkdir(parents=True, exist_ok=True)
+                alias = old.with_name(old.name + '.migrate-' + uuid.uuid4().hex)
+                try:
+                    alias.symlink_to(os.path.relpath(new, old.parent), target_is_directory=True)
+                    old.rename(new)
+                    completed.append((old, new))
+                    alias.replace(old)
+                finally:
+                    alias.unlink(missing_ok=True)
+        except BaseException:
+            for old, new in reversed(completed):
+                if old.is_symlink() and old.resolve() == new:
+                    old.unlink()
+                new.rename(old)
+            raise
+    old, new = layout_pairs(home)[0]
+    if UI.log_path is not None and UI.log_path.is_relative_to(old):
+        UI.log_path = new / UI.log_path.relative_to(old)
+    UI.note('Прежняя установка перенесена в каталоги lang-switcher')
+
+
 @contextmanager
 def operation_log(home):
-    data = home / '.local/share/zorin-switcher'
+    layout_plan(home)
+    data = data_root(home)
     folder = data / 'logs'
     if folder.is_symlink() or not folder.resolve().is_relative_to(data.resolve()):
         raise InstallError('Недопустимый каталог журналов')
@@ -175,7 +256,10 @@ def command_mode(command):
         return 'case'
     if 'switch_layout.sh' in names:
         return 'layout'
-    if 'zorin_switcher.py' in names:
+    if words and Path(words[0]).name == 'lang-switcher' and words[1:] in (['layout'], ['case']):
+        return words[1]
+    if ('zorin_switcher.py' in names or
+            any(Path(word).parts[-3:] == ('lib', 'lang-switcher', 'switcher.py') for word in words)):
         return 'case' if '--case' in words or '-c' in words else 'layout'
     return None
 
@@ -209,18 +293,21 @@ def legacy_extension_ids(home):
 
 
 def managed_files(home):
-    app, data = home / '.local/bin/zorin-switcher', home / '.local/share/zorin-switcher'
     extension = home / '.local/share/gnome-shell/extensions' / EXTENSION_UUID
-    return {
-        app / 'zorin_switcher.py', app / 'keyboard_x11.py', app / 'INSTALL-README.txt',
-        app / 'direct-gnome' / EXTENSION_UUID / 'extension.js',
-        app / 'direct-gnome' / EXTENSION_UUID / 'metadata.json',
+    files = {
         extension / 'extension.js', extension / 'metadata.json',
         home / '.local/bin/switch_layout.sh', home / '.local/bin/switch_case.sh',
-        home / '.local/bin/lang-switcher', data / 'manager.py', data / 'bootstrap.sh',
-        data / 'current', data / 'install.json',
+        home / '.local/bin/lang-switcher',
         home / '.local/share/bash-completion/completions/lang-switcher',
     }
+    # Historical snapshots keep their original absolute paths. Upgrade aliases
+    # make those paths usable by both the old manager and the new one.
+    for data in layout_pairs(home)[0]:
+        files.update(data / name for name in ('manager.py', 'bootstrap.sh', 'current', 'install.json'))
+    for app in layout_pairs(home)[1]:
+        files.update(app / name for name in ('zorin_switcher.py', 'switcher.py', 'keyboard_x11.py', 'INSTALL-README.txt'))
+        files.update(app / 'direct-gnome' / EXTENSION_UUID / name for name in ('extension.js', 'metadata.json'))
+    return files
 
 
 def validate_destination(target, home):
@@ -263,16 +350,16 @@ def settings_plan(settings, home):
             path = matches[0]
             active = [item for item in active if item not in matches[1:]]
         else:
-            path = CUSTOM_ROOT + f'zorin-switcher-{mode}/'
+            path = CUSTOM_ROOT + f'lang-switcher-{mode}/'
             index = 1
             while path in records or path in active:
-                path = CUSTOM_ROOT + f'zorin-switcher-{mode}-{index}/'
+                path = CUSTOM_ROOT + f'lang-switcher-{mode}-{index}/'
                 index += 1
             active.append(path)
         schema = CUSTOM_SCHEMA + path
         plan.extend((schema, key, value) for key, value in (
             ('name', 'Switch Layout' if mode == 'layout' else 'Switch Case'),
-            ('command', shlex.quote(str(home / '.local/bin' / f'switch_{mode}.sh'))),
+            ('command', shlex.quote(str(home / '.local/bin/lang-switcher')) + ' ' + mode),
             ('binding', binding),
         ))
     plan.append((MEDIA, 'custom-keybindings', active))
@@ -384,9 +471,9 @@ def restore(directory, home, settings, uninstall_records=None, extra_file_origin
     files = {name: (directory, entry) for name, entry in state['files'].items()}
     for name, origin in (extra_file_origins or {}).items():
         snapshot = Path(origin).resolve()
-        backups = (home / '.local/share/zorin-switcher/backups').resolve()
-        if (not backups.is_relative_to(home.resolve()) or
-                not snapshot.is_relative_to(backups) or name in files):
+        roots = [(data / 'backups').resolve() for data in layout_pairs(home)[0]]
+        if (not any(root.is_relative_to(home.resolve()) and snapshot.is_relative_to(root)
+                    for root in roots) or name in files):
             raise InstallError('Недопустимый источник восстановления добавленного файла')
         added = read_snapshot(snapshot, home)
         if name not in added['files']:
@@ -528,6 +615,7 @@ def install(settings, home, offline, repository=None):
     UI.title(release_version)
     UI.step(1, 'Проверка окружения')
     version = preflight(settings)
+    layout_plan(home)
     if UI.verbose:
         UI.note(f'{version} / X11')
     for target in managed_files(home):
@@ -543,31 +631,34 @@ def install(settings, home, offline, repository=None):
     if missing:
         run_logged(['sudo', '-n', 'apt-get', 'update'], 'Обновление списка пакетов')
         run_logged(['sudo', '-n', 'apt-get', 'install', '-y', *missing], 'Установка системных пакетов')
-    data = home / '.local/share/zorin-switcher'
     command = home / '.local/bin/lang-switcher'
     if command.exists() and 'lang-switcher managed command' not in command.read_text():
         raise InstallError(f'Команда {command} уже существует и не принадлежит установщику.')
+    migrate_layout(home)
+    data = home / '.local/share/lang-switcher'
     runtime = make_runtime(data, offline)
     # Re-read the settings after package setup and before creating the snapshot.
     plan = settings_plan(settings, home)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
     tx = Transaction(home, settings, data / 'backups' / stamp)
-    app = home / '.local/bin/zorin-switcher'
+    app = home / '.local/lib/lang-switcher'
     extension = home / '.local/share/gnome-shell/extensions' / EXTENSION_UUID
-    module_changed = any(not (extension / name).is_file() or
-                         (extension / name).read_bytes() != (ROOT / 'payload/extension' / name).read_bytes()
-                         for name in ('extension.js', 'metadata.json'))
+    module_changed = extension_changed(extension)
     UI.step(3, 'Файлы и горячие клавиши')
     try:
         previous = read_config(home)
-        tx.copy(ROOT / 'payload/zorin_switcher.py', app / 'zorin_switcher.py', 0o755)
+        tx.copy(ROOT / 'payload/switcher.py', app / 'switcher.py', 0o755)
         tx.copy(ROOT / 'payload/keyboard_x11.py', app / 'keyboard_x11.py', 0o644)
         tx.copy(ROOT / 'README.txt', app / 'INSTALL-README.txt', 0o644)
         for name in ('extension.js', 'metadata.json'):
             tx.copy(ROOT / 'payload/extension' / name, extension / name, 0o644)
             tx.copy(ROOT / 'payload/extension' / name, app / 'direct-gnome' / EXTENSION_UUID / name, 0o644)
         for mode in ('layout', 'case'):
-            tx.copy(ROOT / f'payload/switch_{mode}.sh', home / '.local/bin' / f'switch_{mode}.sh', 0o755)
+            wrapper = home / '.local/bin' / f'switch_{mode}.sh'
+            if wrapper.is_file():
+                content = wrapper.read_text()
+                if command_mode(content) == mode or '# lang-switcher legacy wrapper' in content:
+                    tx.copy(ROOT / f'payload/switch_{mode}.sh', wrapper, 0o755)
         tx.copy(ROOT / 'install.py', data / 'manager.py', 0o644)
         tx.copy(ROOT / 'bootstrap.sh', data / 'bootstrap.sh', 0o755)
         tx.copy(ROOT / 'payload/lang-switcher', command, 0o755)
@@ -582,7 +673,7 @@ def install(settings, home, offline, repository=None):
             'version': release_version,
             'repository': repository or previous.get('repository'),
             'last_backup': str(tx.directory),
-            'base_backup': previous.get('base_backup', str(tx.directory)),
+            'base_backup': str(Path(previous.get('base_backup', str(tx.directory))).resolve()),
             'last_log': str(UI.log_path) if UI.log_path is not None else None,
         }
         origins = {(item['schema'], item['key']): dict(item)
@@ -600,7 +691,8 @@ def install(settings, home, offline, repository=None):
         # the first installation's backup cannot contain those paths yet.
         base = Path(config['base_backup'])
         baseline = tx.state if base == tx.directory else read_snapshot(base, home)
-        extra_files = dict(previous.get('extra_file_origins', {}))
+        extra_files = {name: str(Path(origin).resolve())
+                       for name, origin in previous.get('extra_file_origins', {}).items()}
         for name in tx.state['files']:
             if name not in baseline['files']:
                 extra_files.setdefault(name, str(tx.directory))
@@ -608,7 +700,7 @@ def install(settings, home, offline, repository=None):
         config_file = tx.directory / 'new-config.json'
         config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2))
         tx.copy(config_file, data / 'install.json', 0o644)
-        execute([runtime / 'bin/python', app / 'zorin_switcher.py', '--help'], stdout=subprocess.DEVNULL)
+        execute([runtime / 'bin/python', app / 'switcher.py', '--help'], stdout=subprocess.DEVNULL)
     except BaseException:
         UI.warn('Ошибка установки — возвращаю прежние файлы и настройки')
         restore(tx.directory, home, settings)
@@ -617,7 +709,7 @@ def install(settings, home, offline, repository=None):
 
 
 def read_config(home):
-    path = home / '.local/share/zorin-switcher/install.json'
+    path = data_root(home) / 'install.json'
     return json.loads(path.read_text()) if path.exists() else {}
 
 
@@ -629,18 +721,38 @@ def repository_name(value):
 
 @contextmanager
 def installation_lock(home):
-    data = home / '.local/share/zorin-switcher'
+    layout_plan(home)
+    data = data_root(home)
     validate_destination(data / 'current', home)
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
     if data.stat().st_uid != os.getuid():
         raise InstallError('Каталог программы принадлежит другому пользователю')
     data.chmod(0o700)
-    with (data / '.install.lock').open('a') as lock:
+    descriptor = os.open(data / '.install.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW |
+                         os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    with os.fdopen(descriptor, 'a') as lock:
+        info = os.fstat(lock.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise InstallError('Недопустимый файл блокировки установки')
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise InstallError('Другая установка или восстановление уже выполняется.') from error
         yield
+
+
+def extension_changed(extension):
+    """Display-name edits do not require a running GNOME module to reload."""
+    source = ROOT / 'payload/extension'
+    try:
+        if (extension / 'extension.js').read_bytes() != (source / 'extension.js').read_bytes():
+            return True
+        old = json.loads((extension / 'metadata.json').read_text())
+        new = json.loads((source / 'metadata.json').read_text())
+        return any(old.get(key) != new.get(key) for key in set(old) | set(new)
+                   if key not in ('name', 'description'))
+    except (OSError, ValueError):
+        return True
 
 
 def module_active():
@@ -693,7 +805,7 @@ def uninstall(home, settings):
         raise InstallError('Нет сохранённой установки. Удалять неизвестные файлы не буду.')
     UI.title(config.get('version'))
     UI.note('Удаление и восстановление прежних настроек…')
-    data = home / '.local/share/zorin-switcher'
+    data = data_root(home)
     runtimes = data / 'runtimes'
     if runtimes.is_symlink() or not runtimes.resolve().is_relative_to(home.resolve()):
         raise InstallError('Отказ удалять Python-окружения за пределами HOME или через ссылку')
@@ -746,7 +858,7 @@ def main(argv=None):
         elif args.update:
             repository = repository or read_config(home).get('repository') or DEFAULT_REPOSITORY
             repository_name(repository)
-            command = ['bash', home / '.local/share/zorin-switcher/bootstrap.sh', '--repo', repository]
+            command = ['bash', data_root(home) / 'bootstrap.sh', '--repo', repository]
             if args.verbose:
                 command.append('--verbose')
             execute(command)
@@ -768,6 +880,7 @@ def main(argv=None):
             if args.check_only:
                 UI.title((ROOT / 'VERSION').read_text().strip())
                 version = preflight(settings)
+                layout_plan(home)
                 settings_plan(settings, home)
                 UI.ok(f'{version} / X11')
                 UI.ok('Конфликтов горячих клавиш нет')

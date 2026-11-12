@@ -70,7 +70,7 @@ _lang_switcher()
     fi
 
     if [[ $action == restore ]] && ((COMP_CWORD == 2)); then
-        _lang_switcher_complete_backups "$cur" "$HOME/.local/share/zorin-switcher/backups"
+        _lang_switcher_complete_backups "$cur" "$HOME/.local/share/lang-switcher/backups"
         return 0
     fi
 

@@ -19,7 +19,7 @@ def load(name, path):
 
 installer = load('security_installer', ROOT / 'install.py')
 builder = load('security_builder', ROOT / 'scripts/build_release.py')
-switcher = load('security_switcher', ROOT / 'payload/zorin_switcher.py')
+switcher = load('security_switcher', ROOT / 'payload/switcher.py')
 
 
 class SecurityTests(unittest.TestCase):
@@ -121,7 +121,7 @@ class SecurityTests(unittest.TestCase):
     def test_uninstall_refuses_external_runtime_symlink_before_restoring_files(self):
         with tempfile.TemporaryDirectory() as temp, tempfile.TemporaryDirectory() as external:
             home = Path(temp)
-            data = home / '.local/share/zorin-switcher'
+            data = home / '.local/share/lang-switcher'
             data.mkdir(parents=True)
             (data / 'install.json').write_text(json.dumps({'base_backup': str(home / 'backup')}))
             (data / 'runtimes').symlink_to(external)
