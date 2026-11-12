@@ -58,6 +58,27 @@ echo "$XDG_SESSION_TYPE"
 не захватывает клавиатуру; глобальная горячая клавиша GNOME может кратко
 захватить её при запуске.
 
+## Подробный вывод
+
+По умолчанию выводятся только этапы и итог. Для диагностики:
+
+```bash
+./install.sh --verbose
+lang-switcher status --verbose
+lang-switcher update --verbose
+```
+
+В однокомандной установке флаг также поддерживается:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/AlexZhilov/lang-switcher/master/bootstrap.sh) --verbose
+```
+
+Вывод внешних команд сохраняется локально в
+`~/.local/share/zorin-switcher/logs/` с закрытыми правами. При ошибке путь к
+журналу выводится сразу; после успешной установки — через `status --verbose`.
+Цвета включаются автоматически в терминале. Для отключения: `NO_COLOR=1`.
+
 ## Восстановление и удаление
 
 Вернуть конкретную резервную копию:

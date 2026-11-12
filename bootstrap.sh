@@ -8,9 +8,9 @@ while (($#)); do
     case "$1" in
         --repo) repository="${2:?Укажите owner/repo}"; shift 2 ;;
         --version) version="${2:?Укажите v1.0.0}"; shift 2 ;;
-        --check-only|--offline) installer_args+=("$1"); shift ;;
+        --check-only|--offline|--verbose) installer_args+=("$1"); shift ;;
         -h|--help)
-            printf '%s\n' 'bootstrap.sh --repo AlexZhilov/lang-switcher [--version v1.0.0] [--check-only] [--offline]'
+            printf '%s\n' 'bootstrap.sh [--repo OWNER/REPO] [--version v1.0.1] [--check-only] [--offline] [--verbose]'
             exit 0 ;;
         *) printf '%s\n' "Неизвестный аргумент: $1" >&2; exit 2 ;;
     esac
@@ -33,8 +33,12 @@ base="https://github.com/$repository/releases/latest/download"
 if [[ "$version" != latest ]]; then
     base="https://github.com/$repository/releases/download/$version"
 fi
-curl --fail --show-error --location --retry 2 --proto '=https' "$base/lang-switcher.tar.gz" -o "$workdir/lang-switcher.tar.gz"
-curl --fail --show-error --location --retry 2 --proto '=https' "$base/lang-switcher.tar.gz.sha256" -o "$workdir/checksum"
+printf '%s\n' '  ↓ Загрузка lang-switcher…'
+if ! curl --fail --silent --show-error --location --retry 2 --proto '=https' "$base/lang-switcher.tar.gz" -o "$workdir/lang-switcher.tar.gz" ||
+   ! curl --fail --silent --show-error --location --retry 2 --proto '=https' "$base/lang-switcher.tar.gz.sha256" -o "$workdir/checksum"; then
+    printf '%s\n' "Не удалось скачать релиз: https://github.com/$repository/releases" >&2
+    exit 1
+fi
 read -r expected_hash rest < "$workdir/checksum"
 [[ "$expected_hash" =~ ^[0-9a-f]{64}$ ]] || { echo 'Некорректная контрольная сумма.' >&2; exit 1; }
 (cd -- "$workdir"; printf '%s  lang-switcher.tar.gz\n' "$expected_hash" | sha256sum --check --status -)

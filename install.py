@@ -32,6 +32,103 @@ class InstallError(RuntimeError):
     pass
 
 
+class Console:
+    def __init__(self, stream=None):
+        self.stream = stream
+        self.verbose = False
+        self.log_file = None
+        self.log_path = None
+
+    def paint(self, text, code):
+        stream = self.stream or sys.stdout
+        if stream.isatty() and 'NO_COLOR' not in os.environ and os.environ.get('TERM') != 'dumb':
+            return f'\033[{code}m{text}\033[0m'
+        return text
+
+    def line(self, text=''):
+        print(text, file=self.stream or sys.stdout, flush=True)
+
+    def title(self, version=None):
+        self.line(self.paint('lang-switcher', '1;36') + (f' {version}' if version else ''))
+        self.line()
+
+    def step(self, number, text):
+        self.line(f'  {self.paint(str(number) + "/3", "36")}  {text}')
+
+    def ok(self, text):
+        self.line(f'{self.paint("✓", "32")} {text}')
+
+    def warn(self, text):
+        self.line(f'{self.paint("!", "33")} {text}')
+
+    def note(self, text):
+        self.line(f'  {text}')
+
+    def error(self, text):
+        print(f'{self.paint("✗", "31")} {text}', file=self.stream or sys.stderr, flush=True)
+
+
+UI = Console()
+
+
+@contextmanager
+def operation_log(home):
+    data = home / '.local/share/zorin-switcher'
+    folder = data / 'logs'
+    if folder.is_symlink() or not folder.resolve().is_relative_to(data.resolve()):
+        raise InstallError('Недопустимый каталог журналов')
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    folder.chmod(0o700)
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
+    path = folder / f'install-{stamp}.log'
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    UI.log_path = path
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as log:
+        UI.log_file = log
+        try:
+            yield
+        finally:
+            UI.log_file = None
+
+
+def run_logged(args, description, check=True):
+    command = [str(arg) for arg in args]
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors='replace')
+    detail = result.stdout or ''
+    if UI.log_file is not None:
+        UI.log_file.write('$ ' + shlex.join(command) + '\n' + detail + '\n')
+        UI.log_file.flush()
+    if UI.verbose and detail:
+        UI.line(detail.rstrip())
+    if check and result.returncode:
+        # Without a persistent log (e.g. developer smoke check), retain the
+        # diagnostic output in the exception instead of silently discarding it.
+        suffix = f'\n{detail[-4000:].strip()}' if UI.log_file is None else ''
+        raise InstallError(f'{description}: код {result.returncode}.{suffix}')
+    return result
+
+
+def installation_summary(restart, backup):
+    UI.line()
+    if restart:
+        UI.warn('Установлено · требуется перезапуск GNOME')
+    else:
+        UI.ok('Готово · можно пользоваться')
+    UI.note('Ctrl+Shift+Пробел  раскладка и язык')
+    UI.note('Ctrl+Shift+Q       регистр')
+    if restart:
+        UI.line()
+        UI.note('Ctrl+Shift+Пробел заработает после этого шага:')
+        UI.note('Английская раскладка → Alt+F2 → r → Enter')
+        UI.note('Затем: lang-switcher status')
+    UI.note('Откат: lang-switcher rollback')
+    if UI.verbose:
+        UI.note(f'Копия: {backup}')
+        if UI.log_path is not None:
+            UI.note(f'Лог: {UI.log_path}')
+
+
 def execute(args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
@@ -61,7 +158,11 @@ class Settings:
         return parse_variant(self.get_raw(schema, key))
 
     def set_raw(self, schema, key, raw):
-        execute(['gsettings', 'set', schema, key, raw])
+        command = ['gsettings', 'set', schema, key, raw]
+        if UI.log_file is not None:
+            run_logged(command, 'Сохранение настроек')
+        else:
+            execute(command)
 
 
 def command_mode(command):
@@ -355,7 +456,7 @@ def preflight(settings):
     if os.geteuid() == 0:
         raise InstallError('Запускайте ./install.sh от обычного пользователя, БЕЗ sudo. Пароль sudo будет запрошен только для системных пакетов.')
     if sys.platform != 'linux' or os.environ.get('XDG_SESSION_TYPE') != 'x11':
-        raise InstallError('Эта версия рассчитана на GNOME 43 в сеансе X11. Выберите Xorg/X11 при входе в Zorin.')
+        raise InstallError('Нужен GNOME 43 / X11. Выберите сеанс Xorg/X11 при входе.')
     if not os.environ.get('DISPLAY') or not os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
         raise InstallError('Запустите установщик в терминале рабочего стола целевого пользователя, не через sudo/SSH.')
     version = output(['gnome-shell', '--version'])
@@ -382,23 +483,29 @@ def make_runtime(data, offline):
     runtimes.mkdir(parents=True, exist_ok=True, mode=0o700)
     runtimes.chmod(0o700)
     runtime = runtimes / ('python-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8])
-    execute([sys.executable, '-m', 'venv', runtime])
+    run_logged([sys.executable, '-m', 'venv', runtime], 'Создание Python-окружения')
     python = runtime / 'bin/python'
     pip = [python, '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install']
-    local = subprocess.run([str(arg) for arg in pip + ['--no-index', '--find-links', ROOT / 'wheels', '-r', ROOT / 'requirements.txt']])
+    local = run_logged(pip + ['--no-input', '--no-index', '--find-links', ROOT / 'wheels', '-r', ROOT / 'requirements.txt'],
+                       'Установка Python-пакетов', check=False)
     if local.returncode:
         if offline:
             raise InstallError(f'В комплекте нет совместимых wheels для Python {platform.python_version()}/{platform.machine()}. Старый переключатель не изменён.')
-        print('Нужна совместимая сборка Python-зависимостей; загружаю из PyPI.', flush=True)
-        execute(pip + ['--find-links', ROOT / 'wheels', '-r', ROOT / 'requirements.txt'])
-    execute([python, '-m', 'pip', '--disable-pip-version-check', 'check'])
-    execute([python, '-c', 'import pyperclip; from Xlib.display import Display; Display().close(); print("Python-зависимости и подключение к X11: OK")'])
+        UI.note('Python-пакеты: загрузка из PyPI')
+        run_logged(pip + ['--no-input', '--find-links', ROOT / 'wheels', '-r', ROOT / 'requirements.txt'], 'Загрузка Python-пакетов')
+    run_logged([python, '-m', 'pip', '--disable-pip-version-check', 'check'], 'Проверка зависимостей')
+    run_logged([python, '-c', 'import pyperclip; from Xlib.display import Display; Display().close()'], 'Проверка X11')
     (runtime / '.lang-switcher-runtime').write_text('lang-switcher\n')
     return runtime
 
 
 def install(settings, home, offline, repository=None):
+    release_version = (ROOT / 'VERSION').read_text().strip()
+    UI.title(release_version)
+    UI.step(1, 'Проверка окружения')
     version = preflight(settings)
+    if UI.verbose:
+        UI.note(f'{version} / X11')
     for target in managed_files(home):
         validate_destination(target, home)
     settings_plan(settings, home)  # Detect conflicts before installing anything.
@@ -406,14 +513,16 @@ def install(settings, home, offline, repository=None):
     if missing and offline:
         raise InstallError('Для offline-установки заранее установите системные пакеты: ' + ' '.join(missing))
     if missing:
-        print('Нужны системные пакеты:', ' '.join(missing), flush=True)
-        execute(['sudo', 'apt-get', 'update'])
-        execute(['sudo', 'apt-get', 'install', '-y', *missing])
+        UI.note('Системные пакеты: ' + ' '.join(missing))
+        execute(['sudo', '-v'])  # Keep the password prompt attached to the terminal.
+    UI.step(2, 'Зависимости')
+    if missing:
+        run_logged(['sudo', '-n', 'apt-get', 'update'], 'Обновление списка пакетов')
+        run_logged(['sudo', '-n', 'apt-get', 'install', '-y', *missing], 'Установка системных пакетов')
     data = home / '.local/share/zorin-switcher'
     command = home / '.local/bin/lang-switcher'
     if command.exists() and 'lang-switcher managed command' not in command.read_text():
         raise InstallError(f'Команда {command} уже существует и не принадлежит установщику.')
-    print('Подготовка изолированного Python-окружения…', flush=True)
     runtime = make_runtime(data, offline)
     # Re-read the settings after package setup and before creating the snapshot.
     plan = settings_plan(settings, home)
@@ -424,6 +533,7 @@ def install(settings, home, offline, repository=None):
     module_changed = any(not (extension / name).is_file() or
                          (extension / name).read_bytes() != (ROOT / 'payload/extension' / name).read_bytes()
                          for name in ('extension.js', 'metadata.json'))
+    UI.step(3, 'Файлы и горячие клавиши')
     try:
         previous = read_config(home)
         tx.copy(ROOT / 'payload/zorin_switcher.py', app / 'zorin_switcher.py', 0o755)
@@ -443,10 +553,11 @@ def install(settings, home, offline, repository=None):
         for schema, key, value in plan:
             tx.set(schema, key, value)
         config = {
-            'version': (ROOT / 'VERSION').read_text().strip(),
+            'version': release_version,
             'repository': repository or previous.get('repository'),
             'last_backup': str(tx.directory),
             'base_backup': previous.get('base_backup', str(tx.directory)),
+            'last_log': str(UI.log_path) if UI.log_path is not None else None,
         }
         origins = {(item['schema'], item['key']): dict(item)
                    for item in previous.get('uninstall_settings', [])}
@@ -463,21 +574,10 @@ def install(settings, home, offline, repository=None):
         tx.copy(config_file, data / 'install.json', 0o644)
         execute([runtime / 'bin/python', app / 'zorin_switcher.py', '--help'], stdout=subprocess.DEVNULL)
     except BaseException:
-        print(f'Ошибка установки. Восстанавливаю предыдущие файлы и настройки из {tx.directory}', file=sys.stderr, flush=True)
+        UI.warn('Ошибка установки — возвращаю прежние файлы и настройки')
         restore(tx.directory, home, settings)
         raise
-    probe = subprocess.run(['gdbus', 'call', '--session', '--dest', 'org.gnome.Shell',
-                            '--object-path', '/org/gnome/Shell/Extensions/ZorinSwitcher',
-                            '--method', 'org.gnome.Shell.Extensions.ZorinSwitcher.GetLayout'],
-                           capture_output=True, text=True, timeout=3)
-    print(f'\nУстановка завершена: {version}.\nРезервная копия: {tx.directory}')
-    print('Ctrl+Shift+Пробел — раскладка текста и язык; Ctrl+Shift+Q — регистр.')
-    if module_changed or probe.returncode:
-        print('\nНужно загрузить модуль GNOME. В английской раскладке нажмите Alt+F2, введите r и Enter.\nЛибо выйдите из учётной записи и войдите снова. До этого новая смена раскладки не заработает.')
-    else:
-        print('Модуль GNOME уже загружен. Можно пользоваться, перезапуск не требуется.')
-    print('Команды: lang-switcher status | update | rollback | uninstall')
-    print(f'Ручное восстановление: ./install.sh --restore {shlex.quote(str(tx.directory))}')
+    installation_summary(module_changed or not module_active(), tx.directory)
 
 
 def read_config(home):
@@ -507,25 +607,55 @@ def installation_lock(home):
         yield
 
 
+def module_active():
+    try:
+        probe = subprocess.run(['gdbus', 'call', '--session', '--dest', 'org.gnome.Shell',
+                                '--object-path', '/org/gnome/Shell/Extensions/ZorinSwitcher',
+                                '--method', 'org.gnome.Shell.Extensions.ZorinSwitcher.GetLayout'],
+                               capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
 def show_status(home):
     config = read_config(home)
+    UI.title(config.get('version'))
     if not config:
-        print('lang-switcher не установлен этим установщиком.')
+        UI.warn('Программа не установлена')
         return
-    print('lang-switcher ' + config['version'])
-    print('Репозиторий:', config.get('repository') or 'не задан')
-    print('Последняя резервная копия:', config['last_backup'])
-    probe = subprocess.run(['gdbus', 'call', '--session', '--dest', 'org.gnome.Shell',
-                            '--object-path', '/org/gnome/Shell/Extensions/ZorinSwitcher',
-                            '--method', 'org.gnome.Shell.Extensions.ZorinSwitcher.GetLayout'],
-                           capture_output=True, text=True, timeout=3)
-    print('Модуль GNOME:', 'загружен' if probe.returncode == 0 else 'не загружен; нужен Alt+F2 → r → Enter')
+    if module_active():
+        UI.ok('Модуль GNOME активен')
+    else:
+        UI.warn('Модуль GNOME не загружен')
+        UI.note('Английская раскладка → Alt+F2 → r → Enter')
+    if UI.verbose:
+        UI.line()
+        UI.note('Репозиторий: ' + (config.get('repository') or 'не задан'))
+        UI.note('Копия: ' + config['last_backup'])
+        if config.get('last_log'):
+            UI.note('Лог: ' + config['last_log'])
+
+
+def show_commands(home):
+    UI.title(read_config(home).get('version'))
+    for command, description in (
+        ('status', 'Состояние'), ('update', 'Обновить'),
+        ('rollback', 'Вернуть предыдущую версию'), ('uninstall', 'Удалить'),
+        ('restore КОПИЯ', 'Восстановить копию'),
+        ('layout / case', 'Обработать выделенный текст'),
+    ):
+        UI.note(f'{command:<18}{description}')
+    UI.line()
+    UI.note('--verbose  подробности и пути к журналам')
 
 
 def uninstall(home, settings):
     config = read_config(home)
     if not config:
         raise InstallError('Нет сохранённой установки. Удалять неизвестные файлы не буду.')
+    UI.title(config.get('version'))
+    UI.note('Удаление и восстановление прежних настроек…')
     data = home / '.local/share/zorin-switcher'
     runtimes = data / 'runtimes'
     if runtimes.is_symlink() or not runtimes.resolve().is_relative_to(home.resolve()):
@@ -545,15 +675,16 @@ def uninstall(home, settings):
                     (path / '.lang-switcher-runtime').read_text().strip() == 'lang-switcher' and
                     path.resolve() != current):
                 shutil.rmtree(path)
-    print('Установленная версия удалена. Файлы и настройки до первой установки восстановлены.')
-    print('Резервные копии сохранены. Общие системные пакеты APT не удалялись.')
-    print('Если восстановлена другая версия модуля GNOME, перезапустите оболочку: Alt+F2 → r → Enter.')
+    UI.ok('Удалено · прежние файлы и настройки восстановлены')
+    UI.note('Резервные копии сохранены')
+    UI.note('При смене модуля: Alt+F2 → r → Enter (EN)')
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Установка/обновление Zorin Switcher для GNOME 43/X11. Запускать БЕЗ sudo.')
+    parser = argparse.ArgumentParser(description='lang-switcher · GNOME 43 / X11. Запускать без sudo.')
     parser.add_argument('--offline', action='store_true', help='Не обращаться к сети; системные пакеты должны быть установлены')
     parser.add_argument('--repository', metavar='OWNER/REPO', help='GitHub-репозиторий для будущих обновлений')
+    parser.add_argument('--verbose', action='store_true', help='Подробный вывод и пути к копии/журналу')
     action = parser.add_mutually_exclusive_group()
     action.add_argument('--check-only', action='store_true', help='Проверить совместимость и конфликты без изменений')
     action.add_argument('--restore', type=Path, metavar='BACKUP', help='Восстановить файлы и настройки из резервной копии установки')
@@ -561,18 +692,26 @@ def main(argv=None):
     action.add_argument('--update', action='store_true', help='Установить последний GitHub Release')
     action.add_argument('--rollback', action='store_true', help='Откатить последнее обновление')
     action.add_argument('--uninstall', action='store_true', help='Удалить установленную версию, восстановив состояние до установки')
+    action.add_argument('--commands', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    UI.verbose = args.verbose
+    UI.log_path = None
     try:
         if os.geteuid() == 0:
             raise InstallError('Запускайте установщик от обычного пользователя, без sudo.')
         settings, home = Settings(), Path.home()
         repository = repository_name(args.repository)
-        if args.status:
+        if args.commands:
+            show_commands(home)
+        elif args.status:
             show_status(home)
         elif args.update:
             repository = repository or read_config(home).get('repository') or DEFAULT_REPOSITORY
             repository_name(repository)
-            execute(['bash', home / '.local/share/zorin-switcher/bootstrap.sh', '--repo', repository])
+            command = ['bash', home / '.local/share/zorin-switcher/bootstrap.sh', '--repo', repository]
+            if args.verbose:
+                command.append('--verbose')
+            execute(command)
         elif args.uninstall:
             with installation_lock(home):
                 uninstall(home, settings)
@@ -580,29 +719,40 @@ def main(argv=None):
             backup = args.restore or Path(read_config(home).get('last_backup', ''))
             if not args.restore and not read_config(home):
                 raise InstallError('Нет сохранённой установки для отката.')
+            UI.title()
+            UI.note('Восстановление…')
             with installation_lock(home):
                 restore(backup, home, settings)
-            print('Предыдущие файлы и настройки восстановлены. Если менялась версия модуля GNOME, перезапустите оболочку через Alt+F2 → r → Enter.')
+            UI.ok('Предыдущая версия и настройки восстановлены')
+            UI.note('При смене модуля: Alt+F2 → r → Enter (EN)')
         else:
             verify_bundle()
             if args.check_only:
+                UI.title((ROOT / 'VERSION').read_text().strip())
                 version = preflight(settings)
                 settings_plan(settings, home)
-                print(f'Совместимость: {version}, X11 — OK. Конфликтов горячих клавиш нет.')
+                UI.ok(f'{version} / X11')
+                UI.ok('Конфликтов горячих клавиш нет')
                 missing = missing_packages()
-                print('Нужна установка системных пакетов: ' + ' '.join(missing) if missing else 'Системные пакеты установлены.')
-                print('Проверка завершена. Файлы, настройки и зависимости не изменялись.')
+                if missing:
+                    UI.warn('Нужны пакеты: ' + ' '.join(missing))
+                else:
+                    UI.ok('Системные пакеты установлены')
+                UI.note('Проверено · изменений нет')
             else:
                 if repository is None and (ROOT / 'REPOSITORY').exists():
                     repository = repository_name((ROOT / 'REPOSITORY').read_text().strip() or None)
                 repository = repository or DEFAULT_REPOSITORY
                 with installation_lock(home):
-                    install(settings, home, args.offline, repository)
+                    with operation_log(home):
+                        install(settings, home, args.offline, repository)
     except KeyboardInterrupt:
-        print('\nУстановка прервана.', file=sys.stderr)
+        UI.error('Операция прервана')
         return 130
     except Exception as error:
-        print(f'Установка не завершена: {error}', file=sys.stderr)
+        UI.error(str(error))
+        if UI.log_path is not None:
+            print(f'  Лог: {UI.log_path}', file=sys.stderr)
         return 1
     return 0
 

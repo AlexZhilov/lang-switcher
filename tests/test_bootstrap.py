@@ -11,12 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BootstrapTests(unittest.TestCase):
-    def exercise(self, failure=None):
+    def exercise(self, failure=None, flags=()):
         with tempfile.TemporaryDirectory(prefix='lang switcher bootstrap ') as directory:
             root = Path(directory)
             archive = root / 'test.tar.gz'
             with tarfile.open(archive, 'w:gz') as bundle:
-                code = b'#!/bin/sh\nprintf installed > "$TEST_MARKER"\n'
+                code = b'#!/bin/sh\nprintf installed > "$TEST_MARKER"\nprintf "%s\\n" "$@" > "$TEST_ARGS"\n'
                 member = tarfile.TarInfo('lang-switcher/install.sh')
                 member.size, member.mode = len(code), 0o755
                 bundle.addfile(member, io.BytesIO(code))
@@ -51,10 +51,10 @@ shutil.copyfile(source, destination)
             marker = root / 'installed'
             env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
                        TMPDIR=str(temp_dir), TEST_ARCHIVE=str(archive),
-                       TEST_CHECKSUM=str(checksum), TEST_MARKER=str(marker))
+                       TEST_CHECKSUM=str(checksum), TEST_MARKER=str(marker), TEST_ARGS=str(root/'args'))
             if failure == 'download':
                 env['TEST_FAIL_DOWNLOAD'] = '1'
-            result = subprocess.run(['bash', str(ROOT / 'bootstrap.sh'), '--repo', 'example/lang-switcher'],
+            result = subprocess.run(['bash', str(ROOT / 'bootstrap.sh'), '--repo', 'example/lang-switcher', *flags],
                                     env=env, capture_output=True, text=True)
             self.assertEqual(list(temp_dir.iterdir()), [], result.stderr)
             self.assertFalse((root / 'escaped').exists())
@@ -64,9 +64,14 @@ shutil.copyfile(source, destination)
             else:
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(marker.read_text(), 'installed')
+                for flag in flags:
+                    self.assertIn(flag, (root/'args').read_text().splitlines())
 
     def test_success_removes_only_temporary_downloads(self):
         self.exercise()
+
+    def test_verbose_and_check_only_are_forwarded(self):
+        self.exercise(flags=('--verbose', '--check-only'))
 
     def test_failed_download_is_cleaned(self):
         self.exercise('download')

@@ -11,7 +11,7 @@ case "$action" in
     layout|case)
         exec "$HOME/.local/share/zorin-switcher/current/bin/python" "$HOME/.local/bin/zorin-switcher/zorin_switcher.py" "--$action" "$@" ;;
     help|--help|-h)
-        printf '%s\n' 'lang-switcher status | update | rollback | uninstall | restore BACKUP | layout | case' ;;
+        exec python3 "$manager" --commands "$@" ;;
     *)
         printf '%s\n' "Неизвестная команда: $action. Справка: lang-switcher help" >&2
         exit 2 ;;
