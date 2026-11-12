@@ -58,6 +58,36 @@ echo "$XDG_SESSION_TYPE"
 не захватывает клавиатуру; глобальная горячая клавиша GNOME может кратко
 захватить её при запуске.
 
+## Автодополнение Bash
+
+Установщик добавляет `bash-completion` и файл дополнений в
+`~/.local/share/bash-completion/completions/lang-switcher`. `.bashrc` не меняется.
+В стандартной настройке Bash дополнение загружается автоматически в новом терминале.
+
+Включить его в уже открытом терминале:
+
+```bash
+source <(lang-switcher completion bash)
+```
+
+Примеры:
+
+```text
+lang-switcher <Tab>                 команды
+lang-switcher status --<Tab>        параметры команды
+lang-switcher restore <Tab>         сохранённые копии
+lang-switcher update --repository <Tab>  адрес проекта
+```
+
+При нестандартных настройках загрузчика Bash можно подключить файл напрямую:
+
+```bash
+source ~/.local/share/bash-completion/completions/lang-switcher
+```
+
+Дополнение только читает имена файлов: не запускает CLI, не обращается к GNOME
+и сети. Другие оболочки пока не поддерживаются.
+
 ## Подробный вывод
 
 По умолчанию выводятся только этапы и итог. Для диагностики:

@@ -199,6 +199,8 @@ class InstallerTests(unittest.TestCase):
                 installer.uninstall(home, settings)
             self.assertEqual(old.read_text(), 'original pre-install script')
             self.assertFalse((home / '.local/bin/lang-switcher').exists())
+            self.assertFalse((home / '.local/share/bash-completion/completions/lang-switcher').exists())
+            self.assertFalse((home / '.bashrc').exists())
             self.assertFalse((home / '.local/share/zorin-switcher/current').exists())
             self.assertEqual(list((home / '.local/share/zorin-switcher/runtimes').iterdir()), [])
             for key, value in original.items():
@@ -238,6 +240,52 @@ class InstallerTests(unittest.TestCase):
             removed = installer.CUSTOM_SCHEMA + paths[1]
             for key in ('command', 'name', 'binding'):
                 self.assertEqual(settings.get(removed, key), '')
+
+    def test_uninstall_restores_completion_introduced_after_an_older_install(self):
+        for original_completion in (None, 'user completion before feature upgrade'):
+            with self.subTest(original_completion=original_completion), tempfile.TemporaryDirectory() as temp:
+                home = Path(temp)
+                settings = FakeSettings()
+                def runtime(data, offline):
+                    path = data / 'runtimes' / ('python-20260101T000000Z-' + __import__('uuid').uuid4().hex[:8])
+                    path.mkdir(parents=True)
+                    (path / '.lang-switcher-runtime').write_text('lang-switcher')
+                    return path
+                with patch.object(installer, 'preflight', return_value='GNOME Shell 43.9'), \
+                     patch.object(installer, 'missing_packages', return_value=[]), \
+                     patch.object(installer, 'make_runtime', side_effect=runtime), \
+                     patch.object(installer, 'execute'), \
+                     patch.object(installer, 'module_active', return_value=True), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    installer.install(settings, home, True)
+                    completion = home / '.local/share/bash-completion/completions/lang-switcher'
+                    first = installer.read_config(home)
+                    base_state = Path(first['base_backup']) / 'state.json'
+                    state = json.loads(base_state.read_text())
+                    del state['files'][str(completion)]  # Pre-feature installation snapshot.
+                    base_state.write_text(json.dumps(state))
+                    completion.unlink()
+                    if original_completion is not None:
+                        completion.write_text(original_completion)
+                    installer.install(settings, home, True)
+                    introduced = installer.read_config(home)
+                    origin = introduced['extra_file_origins'][str(completion)]
+                    self.assertEqual(completion.read_bytes(), (ROOT / 'payload/lang-switcher.bash').read_bytes())
+                    installer.restore(Path(introduced['last_backup']), home, settings)
+                    if original_completion is None:
+                        self.assertFalse(completion.exists())
+                    else:
+                        self.assertEqual(completion.read_text(), original_completion)
+                    installer.install(settings, home, True)
+                    origin = installer.read_config(home)['extra_file_origins'][str(completion)]
+                    installer.install(settings, home, True)
+                    self.assertEqual(installer.read_config(home)['extra_file_origins'][str(completion)], origin)
+                    installer.uninstall(home, settings)
+                if original_completion is None:
+                    self.assertFalse(completion.exists())
+                else:
+                    self.assertEqual(completion.read_text(), original_completion)
+                self.assertFalse((home / '.bashrc').exists())
 
     def test_variant_and_repository_validation(self):
         self.assertEqual(installer.parse_variant('@as []'), [])

@@ -13,7 +13,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD_FILES = ('zorin_switcher.py', 'keyboard_x11.py', 'extension/extension.js', 'extension/metadata.json',
-                 'lang-switcher', 'switch_layout.sh', 'switch_case.sh')
+                 'lang-switcher', 'lang-switcher.bash', 'switch_layout.sh', 'switch_case.sh')
 
 
 def public_tar_metadata(info):

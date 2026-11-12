@@ -133,6 +133,26 @@ class SecurityTests(unittest.TestCase):
                 restore.assert_not_called()
             self.assertEqual(sentinel.read_text(), 'unchanged')
 
+    def test_backup_directory_cannot_escape_home_via_parent_symlink(self):
+        with tempfile.TemporaryDirectory() as temp, tempfile.TemporaryDirectory() as external:
+            home = Path(temp)
+            (home / 'backups').symlink_to(external)
+            with self.assertRaises(installer.InstallError):
+                installer.Transaction(home, object(), home / 'backups/new-copy')
+            self.assertEqual(list(Path(external).iterdir()), [])
+
+    def test_extra_file_origins_are_validated_before_any_restore(self):
+        with tempfile.TemporaryDirectory() as temp, tempfile.TemporaryDirectory() as external:
+            home = Path(temp)
+            tx = installer.Transaction(home, object(), home / 'backup')
+            target = home / '.local/share/bash-completion/completions/lang-switcher'
+            target.parent.mkdir(parents=True)
+            target.write_text('keep')
+            with self.assertRaises(installer.InstallError):
+                installer.restore(tx.directory, home, object(), uninstall_records=[],
+                                  extra_file_origins={str(target): external})
+            self.assertEqual(target.read_text(), 'keep')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -10,6 +10,16 @@ case "$action" in
         exec python3 "$manager" --restore "$@" ;;
     layout|case)
         exec "$HOME/.local/share/zorin-switcher/current/bin/python" "$HOME/.local/bin/zorin-switcher/zorin_switcher.py" "--$action" "$@" ;;
+    completion)
+        if [ "$#" -gt 1 ]; then
+            printf '%s\n' 'Использование: lang-switcher completion bash' >&2
+            exit 2
+        fi
+        case "${1:-bash}" in
+            bash) exec cat "$HOME/.local/share/bash-completion/completions/lang-switcher" ;;
+            -h|--help) printf '%s\n' 'source <(lang-switcher completion bash)' ;;
+            *) printf '%s\n' 'Поддерживается автодополнение Bash.' >&2; exit 2 ;;
+        esac ;;
     help|--help|-h)
         exec python3 "$manager" --commands "$@" ;;
     *)

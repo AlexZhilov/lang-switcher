@@ -25,7 +25,7 @@ CUSTOM_SCHEMA = MEDIA + '.custom-keybinding:'
 CUSTOM_ROOT = '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/'
 INPUT = 'org.gnome.desktop.input-sources'
 SHELL = 'org.gnome.shell'
-APT_PACKAGES = ('python3-venv', 'xclip', 'libglib2.0-bin')
+APT_PACKAGES = ('python3-venv', 'xclip', 'libglib2.0-bin', 'bash-completion')
 
 
 class InstallError(RuntimeError):
@@ -219,6 +219,7 @@ def managed_files(home):
         home / '.local/bin/switch_layout.sh', home / '.local/bin/switch_case.sh',
         home / '.local/bin/lang-switcher', data / 'manager.py', data / 'bootstrap.sh',
         data / 'current', data / 'install.json',
+        home / '.local/share/bash-completion/completions/lang-switcher',
     }
 
 
@@ -305,6 +306,8 @@ def atomic_copy(source, target, mode=None):
 class Transaction:
     def __init__(self, home, settings, directory):
         self.home, self.settings, self.directory = home, settings, directory
+        if not directory.parent.resolve().is_relative_to(home.resolve()):
+            raise InstallError('Каталог резервных копий выходит за пределы HOME')
         directory.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.parent.chmod(0o700)
         directory.mkdir(mode=0o700)
@@ -367,26 +370,47 @@ class Transaction:
         self.settings.set_raw(schema, key, raw)
 
 
-def restore(directory, home, settings, uninstall_records=None):
+def read_snapshot(directory, home):
     directory = directory.resolve()
     state = json.loads((directory / 'state.json').read_text())
     if state.get('version') != 1 or state.get('home') != str(home):
         raise InstallError('Резервная копия создана для другого пользователя или неизвестной версии установщика.')
+    return state
+
+
+def restore(directory, home, settings, uninstall_records=None, extra_file_origins=None):
+    directory = directory.resolve()
+    state = read_snapshot(directory, home)
+    files = {name: (directory, entry) for name, entry in state['files'].items()}
+    for name, origin in (extra_file_origins or {}).items():
+        snapshot = Path(origin).resolve()
+        backups = (home / '.local/share/zorin-switcher/backups').resolve()
+        if (not backups.is_relative_to(home.resolve()) or
+                not snapshot.is_relative_to(backups) or name in files):
+            raise InstallError('Недопустимый источник восстановления добавленного файла')
+        added = read_snapshot(snapshot, home)
+        if name not in added['files']:
+            raise InstallError('Нет резервной записи для добавленного файла')
+        files[name] = snapshot, added['files'][name]
     # Validate the entire snapshot before restoring any entry.
-    for name in state['files']:
+    for name, (snapshot, entry) in files.items():
         validate_destination(Path(name), home)
+        if entry['kind'] == 'file':
+            source = snapshot / entry['backup']
+            if not source.resolve().is_relative_to(snapshot) or not source.is_file():
+                raise InstallError('Недопустимый или отсутствующий резервный файл')
+        elif entry['kind'] not in ('absent', 'symlink'):
+            raise InstallError('Неизвестный тип резервной копии')
     for item in state['settings'] if uninstall_records is None else uninstall_records:
         validate_setting(item['schema'], item['key'])
     errors = []
-    for name, entry in reversed(list(state['files'].items())):
+    for name, (snapshot, entry) in reversed(list(files.items())):
         try:
             target = Path(name)
             if not target.is_absolute() or not target.is_relative_to(home):
                 raise InstallError(f'Недопустимый путь в резервной копии: {target}')
             if entry['kind'] == 'file':
-                source = directory / entry['backup']
-                if not source.resolve().is_relative_to(directory):
-                    raise InstallError('Недопустимый путь к резервному файлу')
+                source = snapshot / entry['backup']
                 atomic_copy(source, target)
             elif entry['kind'] == 'symlink':
                 temp = target.with_name(target.name + '.restore-' + uuid.uuid4().hex)
@@ -547,6 +571,8 @@ def install(settings, home, offline, repository=None):
         tx.copy(ROOT / 'install.py', data / 'manager.py', 0o644)
         tx.copy(ROOT / 'bootstrap.sh', data / 'bootstrap.sh', 0o755)
         tx.copy(ROOT / 'payload/lang-switcher', command, 0o755)
+        tx.copy(ROOT / 'payload/lang-switcher.bash',
+                home / '.local/share/bash-completion/completions/lang-switcher', 0o644)
         tx.link_runtime(runtime, data / 'current')
         # Changing sources may update MRU automatically. Include it in rollback.
         tx.remember_setting(INPUT, 'mru-sources')
@@ -569,6 +595,16 @@ def install(settings, home, offline, repository=None):
                 else:
                     origins[key] = dict(item)
         config['uninstall_settings'] = list(origins.values())
+        tx.remember_file(data / 'install.json')
+        # Files introduced by later versions need their own original snapshot:
+        # the first installation's backup cannot contain those paths yet.
+        base = Path(config['base_backup'])
+        baseline = tx.state if base == tx.directory else read_snapshot(base, home)
+        extra_files = dict(previous.get('extra_file_origins', {}))
+        for name in tx.state['files']:
+            if name not in baseline['files']:
+                extra_files.setdefault(name, str(tx.directory))
+        config['extra_file_origins'] = extra_files
         config_file = tx.directory / 'new-config.json'
         config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2))
         tx.copy(config_file, data / 'install.json', 0o644)
@@ -643,6 +679,7 @@ def show_commands(home):
         ('status', 'Состояние'), ('update', 'Обновить'),
         ('rollback', 'Вернуть предыдущую версию'), ('uninstall', 'Удалить'),
         ('restore КОПИЯ', 'Восстановить копию'),
+        ('completion bash', 'Скрипт автодополнения'),
         ('layout / case', 'Обработать выделенный текст'),
     ):
         UI.note(f'{command:<18}{description}')
@@ -663,7 +700,8 @@ def uninstall(home, settings):
     # First installation's snapshot also restores an older manually installed
     # switcher, if one was present before this installer was used.
     restore(Path(config['base_backup']), home, settings,
-            uninstall_records=config.get('uninstall_settings'))
+            uninstall_records=config.get('uninstall_settings'),
+            extra_file_origins=config.get('extra_file_origins'))
     current = (data / 'current').resolve()
     if runtimes.is_dir():
         for path in runtimes.iterdir():
