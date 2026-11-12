@@ -54,8 +54,11 @@ def main(argv=None):
         bundle = Path(temp) / 'lang-switcher'
         bundle.mkdir()
         for name in ('install.sh', 'install.py', 'bootstrap.sh', 'requirements.txt',
-                     'README.txt', 'README.md', 'SECURITY.md', 'VERSION'):
-            shutil.copy2(ROOT / name, bundle / name)
+                     'README.txt', 'README.md', 'SECURITY.md', 'VERSION',
+                     'docs/REFERENCE.md', 'docs/DEVELOPMENT.md'):
+            target = bundle / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, target)
         for name in PAYLOAD_FILES:
             source, target = ROOT / 'payload' / name, bundle / 'payload' / name
             if source.is_symlink() or not source.resolve().is_relative_to(ROOT):

@@ -26,8 +26,10 @@ class SecurityTests(unittest.TestCase):
     def test_archive_has_neutral_ownership_and_only_allowlisted_payload(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            for name in ('install.sh', 'install.py', 'bootstrap.sh', 'requirements.txt', 'README.txt', 'README.md', 'SECURITY.md', 'VERSION'):
-                (root / name).write_text('1.0.0' if name == 'VERSION' else 'public')
+            for name in ('install.sh', 'install.py', 'bootstrap.sh', 'requirements.txt', 'README.txt', 'README.md', 'SECURITY.md', 'VERSION', 'docs/REFERENCE.md', 'docs/DEVELOPMENT.md'):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('1.0.0' if name == 'VERSION' else 'public')
             (root / 'requirements.txt').write_text('pyperclip==1.10.0\n')
             for name in builder.PAYLOAD_FILES:
                 path = root / 'payload' / name
