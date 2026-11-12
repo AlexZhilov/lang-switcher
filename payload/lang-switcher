@@ -1,0 +1,18 @@
+#!/bin/sh
+# lang-switcher managed command
+manager="$HOME/.local/share/zorin-switcher/manager.py"
+action="${1:-status}"
+if [ "$#" -gt 0 ]; then shift; fi
+case "$action" in
+    status|update|rollback|uninstall)
+        exec python3 "$manager" "--$action" "$@" ;;
+    restore)
+        exec python3 "$manager" --restore "$@" ;;
+    layout|case)
+        exec "$HOME/.local/share/zorin-switcher/current/bin/python" "$HOME/.local/bin/zorin-switcher/zorin_switcher.py" "--$action" "$@" ;;
+    help|--help|-h)
+        printf '%s\n' 'lang-switcher status | update | rollback | uninstall | restore BACKUP | layout | case' ;;
+    *)
+        printf '%s\n' "Неизвестная команда: $action. Справка: lang-switcher help" >&2
+        exit 2 ;;
+esac

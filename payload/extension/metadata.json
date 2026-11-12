@@ -1,0 +1,8 @@
+{
+  "uuid": "lang-switcher@local",
+  "name": "Zorin Switcher Direct Input",
+  "description": "Switch existing RU/EN XKB sources without keyboard grabs or simulated modifiers.",
+  "shell-version": ["43"],
+  "version": 1,
+  "session-modes": ["user"]
+}
