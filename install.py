@@ -18,6 +18,7 @@ import sys
 import uuid
 
 ROOT = Path(__file__).resolve().parent
+DEFAULT_REPOSITORY = 'AlexZhilov/lang-switcher'
 EXTENSION_UUID = 'lang-switcher@local'
 MEDIA = 'org.gnome.settings-daemon.plugins.media-keys'
 CUSTOM_SCHEMA = MEDIA + '.custom-keybinding:'
@@ -569,9 +570,7 @@ def main(argv=None):
         if args.status:
             show_status(home)
         elif args.update:
-            repository = repository or read_config(home).get('repository')
-            if not repository:
-                raise InstallError('Репозиторий ещё не задан. Используйте lang-switcher update --repository OWNER/REPO.')
+            repository = repository or read_config(home).get('repository') or DEFAULT_REPOSITORY
             repository_name(repository)
             execute(['bash', home / '.local/share/zorin-switcher/bootstrap.sh', '--repo', repository])
         elif args.uninstall:
@@ -596,6 +595,7 @@ def main(argv=None):
             else:
                 if repository is None and (ROOT / 'REPOSITORY').exists():
                     repository = repository_name((ROOT / 'REPOSITORY').read_text().strip() or None)
+                repository = repository or DEFAULT_REPOSITORY
                 with installation_lock(home):
                     install(settings, home, args.offline, repository)
     except KeyboardInterrupt:

@@ -1,5 +1,5 @@
 .PHONY: test bundle check
-REPOSITORY ?=
+REPOSITORY ?= AlexZhilov/lang-switcher
 
 test: check
 	python3 -m unittest discover -s tests -v

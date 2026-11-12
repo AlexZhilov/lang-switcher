@@ -1,7 +1,7 @@
 #!/bin/bash
 # Download a release into a disposable directory; keep installed files/backups.
 set -euo pipefail
-repository="${LANG_SWITCHER_REPOSITORY:-}"
+repository="${LANG_SWITCHER_REPOSITORY:-AlexZhilov/lang-switcher}"
 version=latest
 installer_args=()
 while (($#)); do
@@ -10,13 +10,13 @@ while (($#)); do
         --version) version="${2:?Укажите v1.0.0}"; shift 2 ;;
         --check-only|--offline) installer_args+=("$1"); shift ;;
         -h|--help)
-            printf '%s\n' 'bootstrap.sh --repo OWNER/lang-switcher [--version v1.0.0] [--check-only] [--offline]'
+            printf '%s\n' 'bootstrap.sh --repo AlexZhilov/lang-switcher [--version v1.0.0] [--check-only] [--offline]'
             exit 0 ;;
         *) printf '%s\n' "Неизвестный аргумент: $1" >&2; exit 2 ;;
     esac
 done
 if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-    echo 'Укажите --repo OWNER/lang-switcher.' >&2; exit 2
+    echo 'Укажите --repo AlexZhilov/lang-switcher.' >&2; exit 2
 fi
 if [[ "$version" != latest && ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo 'Версия должна иметь вид v1.0.0.' >&2; exit 2

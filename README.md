@@ -1,5 +1,8 @@
 # lang-switcher
 
+[Репозиторий GitHub](https://github.com/AlexZhilov/lang-switcher) ·
+[Релизы и установочные файлы](https://github.com/AlexZhilov/lang-switcher/releases)
+
 **lang-switcher** исправляет текст, набранный в неверной русской или английской
 раскладке, и одновременно выбирает соответствующий язык ввода. После исправления
 можно продолжать печатать на нужном языке без отдельного Alt+Shift.
@@ -46,7 +49,8 @@ echo "$XDG_SESSION_TYPE"
 ## Установка из архива
 
 Этот способ подходит для чистой установки и замены прежнего пользовательского
-скрипта. Скопируйте на целевой ПК два файла:
+скрипта. Скачайте из [Releases](https://github.com/AlexZhilov/lang-switcher/releases)
+или скопируйте на целевой ПК два файла:
 
 - `lang-switcher.tar.gz`;
 - `lang-switcher.tar.gz.sha256`.
@@ -77,13 +81,13 @@ cd lang-switcher
 
 ## Установка одной командой с GitHub
 
-> Пока GitHub-репозиторий и первый Release не опубликованы, URL ниже — шаблон.
-> Перед использованием замените `OWNER/lang-switcher` на реальный репозиторий.
+> Для установки этой командой нужен опубликованный GitHub Release с файлами
+> `lang-switcher.tar.gz` и `lang-switcher.tar.gz.sha256`.
 
 Из Bash-терминала рабочего стола:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/OWNER/lang-switcher/main/bootstrap.sh) --repo OWNER/lang-switcher
+bash <(curl -fsSL https://raw.githubusercontent.com/AlexZhilov/lang-switcher/master/bootstrap.sh) --repo AlexZhilov/lang-switcher
 ```
 
 Команда скачает последний Release, проверит контрольную сумму, распакует комплект,
@@ -140,7 +144,7 @@ GNOME и повторите установку.
 при установке из локального архива, укажите его при первом обновлении:
 
 ```bash
-lang-switcher update --repository OWNER/lang-switcher
+lang-switcher update --repository AlexZhilov/lang-switcher
 ```
 
 `rollback` и `restore` возвращают сохранённый снимок настроек.
@@ -184,7 +188,7 @@ lang-switcher update --repository OWNER/lang-switcher
 
 ```bash
 make test
-make bundle REPOSITORY=OWNER/lang-switcher
+make bundle REPOSITORY=AlexZhilov/lang-switcher
 ```
 
 Сборка создаёт:
@@ -198,7 +202,7 @@ Python wheels скачиваются в игнорируемую папку `whe
 При уже подготовленном кеше можно собрать без сети:
 
 ```bash
-python3 scripts/build_release.py --repo OWNER/lang-switcher --no-download
+python3 scripts/build_release.py --repo AlexZhilov/lang-switcher --no-download
 ```
 
 `make test` не устанавливает программу и не меняет настройки рабочего стола:

@@ -28,7 +28,7 @@ def public_tar_metadata(info):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--repo', default='', help='GitHub owner/repository embedded in updates')
+    parser.add_argument('--repo', default='AlexZhilov/lang-switcher', help='GitHub owner/repository embedded in updates')
     parser.add_argument('--version', help='Expected Git tag, for example v1.0.0')
     parser.add_argument('--no-download', action='store_true', help='Use the already built wheels/ cache')
     parser.add_argument('--output', type=Path, default=ROOT / 'dist')
