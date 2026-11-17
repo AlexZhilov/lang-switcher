@@ -1,6 +1,6 @@
 """Pure transformations and failure/concurrency behaviour; no desktop required."""
 import ast
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 import fcntl
 import importlib.util
 import io
@@ -10,7 +10,7 @@ import random
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PATH = Path(os.environ.get('LANG_SWITCHER_MODULE', ROOT / 'payload' / 'switcher.py'))
@@ -55,53 +55,150 @@ class SwitcherTests(unittest.TestCase):
                                ('  hELLo', '  HELLO'), ('123!?', '123!?'), ('', '')]:
             self.assertEqual(switcher.toggle_case(text), expected)
 
-    def test_clipboard_restored_if_copy_or_paste_fails(self):
-        for action in (switcher.get_selected_text, lambda: switcher.paste_text('converted')):
-            clipboard = SimpleNamespace(value='previous clipboard')
-            clipboard.paste = lambda: clipboard.value
-            clipboard.copy = lambda text: setattr(clipboard, 'value', text)
-            keyboard = Mock()
-            keyboard.hotkey.side_effect = RuntimeError('desktop error')
-            with patch.object(switcher, 'desktop_tools', return_value=(keyboard, clipboard)), \
-                 patch.object(switcher.time, 'sleep'):
-                with self.assertRaisesRegex(RuntimeError, 'desktop error'):
-                    action()
-                self.assertEqual(clipboard.value, 'previous clipboard')
+    @contextmanager
+    def desktop(self, selected='ghbdtn', copy_delay=.02):
+        state = SimpleNamespace(now=0.0, value='original', ready=None)
+        clipboard, keyboard = Mock(), Mock()
 
-    def test_missing_extension_does_not_replace_text_and_releases_keys(self):
-        with patch.object(switcher, 'desktop_tools'), \
-             patch.object(switcher.time, 'sleep'), \
-             patch.object(switcher, 'get_selected_text', return_value='ghbdtn'), \
-             patch.object(switcher, 'set_input_source', side_effect=RuntimeError('module unavailable')), \
-             patch.object(switcher, 'paste_text') as paste, \
-             patch.object(switcher, 'release_modifiers') as release:
-            with self.assertRaisesRegex(RuntimeError, 'module unavailable'):
+        def copy(text):
+            state.value = text
+
+        def paste():
+            if state.ready is not None and state.now >= state.ready:
+                state.value = selected
+                state.ready = None
+            return state.value
+
+        def hotkey(*keys):
+            if keys == ('ctrl', 'c'):
+                state.ready = state.now + copy_delay
+            elif keys == ('ctrl', 'v'):
+                state.inserted = state.value
+
+        def sleep(delay):
+            state.now += delay
+
+        clipboard.copy.side_effect = copy
+        clipboard.paste.side_effect = paste
+        keyboard.hotkey.side_effect = hotkey
+        with patch.object(switcher, 'desktop_tools', return_value=(keyboard, clipboard)), \
+             patch.object(switcher.time, 'sleep', side_effect=sleep), \
+             patch.object(switcher.time, 'monotonic', side_effect=lambda: state.now):
+            yield state, keyboard, clipboard
+
+    def test_selection_ready_early_and_clipboard_restored_once(self):
+        for delay in (0, .02, .4):
+            with self.subTest(delay=delay), self.desktop(copy_delay=delay) as (state, keyboard, clipboard), \
+                 patch.object(switcher, 'set_input_source') as source:
                 switcher.process_selection(False)
-            paste.assert_not_called()
-            release.assert_called_once()
+                self.assertEqual(state.inserted, 'привет')
+                self.assertEqual(state.value, 'original')
+                self.assertEqual(clipboard.copy.call_args_list,
+                                 [call(''), call('привет'), call('original')])
+                self.assertLessEqual(state.now, delay + .106)
+                keyboard.wait_for_modifiers_release.assert_called_once()
+                source.assert_called_once_with('ru')
 
     def test_case_does_not_change_language(self):
-        with patch.object(switcher, 'desktop_tools'), \
-             patch.object(switcher.time, 'sleep'), \
-             patch.object(switcher, 'get_selected_text', return_value='Привет'), \
-             patch.object(switcher, 'set_input_source') as source, \
-             patch.object(switcher, 'paste_text') as paste, \
-             patch.object(switcher, 'release_modifiers'):
+        with self.desktop('Привет') as (state, keyboard, clipboard), \
+             patch.object(switcher, 'set_input_source') as source:
             switcher.process_selection(True)
-            source.assert_not_called()
-            paste.assert_called_once_with('привет')
+        self.assertEqual(state.inserted, 'привет')
+        self.assertEqual(state.value, 'original')
+        source.assert_not_called()
 
-    def test_no_selection_is_noop(self):
-        with patch.object(switcher, 'desktop_tools'), \
-             patch.object(switcher.time, 'sleep'), \
-             patch.object(switcher, 'get_selected_text', return_value=''), \
-             patch.object(switcher, 'set_input_source') as source, \
-             patch.object(switcher, 'paste_text') as paste, \
-             patch.object(switcher, 'release_modifiers') as release:
+    def test_unchanged_text_is_not_reinserted(self):
+        for change_case in (True, False):
+            with self.subTest(change_case=change_case), self.desktop('123') as (state, keyboard, clipboard), \
+                 patch.object(switcher, 'set_input_source') as source:
+                switcher.process_selection(change_case)
+                keyboard.hotkey.assert_called_once_with('ctrl', 'c')
+                self.assertEqual(state.value, 'original')
+                self.assertFalse(hasattr(state, 'inserted'))
+                if change_case:
+                    source.assert_not_called()
+                else:
+                    source.assert_called_once_with('us')
+
+    def test_copy_timeout_restores_clipboard_and_does_not_paste(self):
+        with self.desktop('') as (state, keyboard, clipboard), \
+             patch.object(switcher, 'set_input_source') as source:
             switcher.process_selection(False)
-            source.assert_not_called()
-            paste.assert_not_called()
-            release.assert_called_once()
+        self.assertEqual(state.value, 'original')
+        self.assertGreaterEqual(state.now, switcher.COPY_TIMEOUT)
+        keyboard.hotkey.assert_called_once_with('ctrl', 'c')
+        source.assert_not_called()
+
+    def test_modifier_timeout_does_not_touch_clipboard(self):
+        with self.desktop() as (state, keyboard, clipboard):
+            keyboard.wait_for_modifiers_release.side_effect = RuntimeError('held')
+            with self.assertRaisesRegex(RuntimeError, 'held'):
+                switcher.process_selection(False)
+        clipboard.copy.assert_not_called()
+        clipboard.paste.assert_not_called()
+        keyboard.hotkey.assert_not_called()
+
+    def test_extension_failure_restores_original_clipboard(self):
+        with self.desktop() as (state, keyboard, clipboard), \
+             patch.object(switcher, 'set_input_source', side_effect=RuntimeError('no module')):
+            with self.assertRaisesRegex(RuntimeError, 'no module'):
+                switcher.process_selection(False)
+        self.assertEqual(state.value, 'original')
+        keyboard.hotkey.assert_called_once_with('ctrl', 'c')
+
+    def test_copy_and_paste_errors_restore_clipboard(self):
+        for chord in (('ctrl', 'c'), ('ctrl', 'v')):
+            with self.subTest(chord=chord), self.desktop() as (state, keyboard, clipboard), \
+                 patch.object(switcher, 'set_input_source'):
+                send = keyboard.hotkey.side_effect
+                def fail(*keys):
+                    if keys == chord:
+                        raise RuntimeError('desktop error')
+                    send(*keys)
+                keyboard.hotkey.side_effect = fail
+                with self.assertRaisesRegex(RuntimeError, 'desktop error'):
+                    switcher.process_selection(False)
+                self.assertEqual(state.value, 'original')
+
+    def test_restore_failure_does_not_hide_original_error(self):
+        clipboard = Mock()
+        clipboard.copy.side_effect = RuntimeError('restore failed')
+        with redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaisesRegex(ValueError, 'original error'):
+                with switcher.saved_text_clipboard(clipboard):
+                    raise ValueError('original error')
+        self.assertIn('Не удалось восстановить', errors.getvalue())
+
+    def test_restore_failure_is_reported_after_success(self):
+        clipboard = Mock()
+        clipboard.copy.side_effect = RuntimeError('restore failed')
+        with self.assertRaisesRegex(RuntimeError, 'restore failed'):
+            with switcher.saved_text_clipboard(clipboard):
+                pass
+
+    def test_initial_clipboard_read_failure_does_not_write(self):
+        clipboard = Mock()
+        clipboard.paste.side_effect = RuntimeError('cannot read')
+        with self.assertRaisesRegex(RuntimeError, 'cannot read'):
+            with switcher.saved_text_clipboard(clipboard):
+                self.fail('Should not enter the operation')
+        clipboard.copy.assert_not_called()
+
+    def test_cancelled_copy_restores_clipboard(self):
+        with self.desktop() as (state, keyboard, clipboard):
+            keyboard.hotkey.side_effect = KeyboardInterrupt
+            with self.assertRaises(KeyboardInterrupt):
+                switcher.process_selection(False)
+        self.assertEqual(state.value, 'original')
+
+    def test_cancelled_command_returns_130_without_traceback(self):
+        with tempfile.TemporaryDirectory() as runtime, \
+             patch.dict(os.environ, XDG_RUNTIME_DIR=runtime), \
+             patch.object(switcher, 'process_selection', side_effect=KeyboardInterrupt), \
+             redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(switcher.main([]), 130)
+        self.assertIn('Операция отменена', errors.getvalue())
+        self.assertNotIn('Traceback', errors.getvalue())
 
     def test_overlapping_invocation_is_skipped(self):
         with tempfile.TemporaryDirectory() as runtime, \
@@ -127,9 +224,9 @@ class SwitcherTests(unittest.TestCase):
         for response in ('()', '[]', '(123,)', "('ru', 'us')"):
             with patch.object(switcher.subprocess, 'run', return_value=SimpleNamespace(stdout=response)):
                 with self.assertRaises(RuntimeError):
-                    switcher.current_input_source()
+                    switcher.direct_input_call('GetLayout')
         with patch.object(switcher.subprocess, 'run', return_value=SimpleNamespace(stdout="('ru',)")):
-            self.assertEqual(switcher.current_input_source(), 'ru')
+            self.assertEqual(switcher.direct_input_call('GetLayout'), 'ru')
 
 
 if __name__ == '__main__':

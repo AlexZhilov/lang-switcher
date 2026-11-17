@@ -30,6 +30,9 @@ RU_LAYOUT = (
 )
 DBUS_PATH = '/org/gnome/Shell/Extensions/ZorinSwitcher'
 DBUS_INTERFACE = 'org.gnome.Shell.Extensions.ZorinSwitcher'
+COPY_TIMEOUT = 0.6
+COPY_POLL_INTERVAL = 0.005
+PASTE_SETTLE_TIME = 0.1
 
 
 def _translation(primary, secondary):
@@ -82,17 +85,9 @@ def direct_input_call(method, *args):
     return response[0]
 
 
-def current_input_source():
-    return direct_input_call('GetLayout')
-
-
 def set_input_source(target):
     if direct_input_call('SetLayout', target) != target:
         raise RuntimeError('GNOME не выбрал запрошенный язык ввода')
-
-
-def match_input_source(text):
-    set_input_source(target_layout(text))
 
 
 @lru_cache(maxsize=1)
@@ -104,53 +99,52 @@ def desktop_tools():
 
 
 @contextmanager
-def saved_text_clipboard():
+def saved_text_clipboard(clipboard):
     """Восстановить текстовый буфер также при ошибке копирования/вставки."""
-    _, clipboard = desktop_tools()
     original = clipboard.paste()
     try:
         yield clipboard
     finally:
-        clipboard.copy(original)
-
-
-def get_selected_text():
-    keyboard, _ = desktop_tools()
-    with saved_text_clipboard() as clipboard:
-        clipboard.copy('')
-        time.sleep(0.1)
-        keyboard.hotkey('ctrl', 'c')
-        time.sleep(0.2)
-        return clipboard.paste()
-
-
-def paste_text(text):
-    if not text:
-        return
-    keyboard, _ = desktop_tools()
-    with saved_text_clipboard() as clipboard:
-        clipboard.copy(text)
-        time.sleep(0.1)
-        keyboard.hotkey('ctrl', 'v')
-        time.sleep(0.1)
-
-
-def release_modifiers():
-    keyboard, _ = desktop_tools()
-    for key in ('ctrl', 'ctrlright', 'ctrlleft', 'shift'):
+        original_error = sys.exc_info()[1]
         try:
-            keyboard.keyUp(key, _pause=False)
+            clipboard.copy(original)
         except Exception:
-            # Уборка не должна скрывать исходную ошибку приложения.
-            continue
-    time.sleep(0.05)
+            if original_error is None:
+                raise
+            # Keep the actual failure (including cancellation) as the cause.
+            print('lang-switcher: Не удалось восстановить текстовый буфер', file=sys.stderr)
+
+
+def get_selected_text(keyboard, clipboard):
+    clipboard.copy('')
+    keyboard.hotkey('ctrl', 'c')
+    # Copy is asynchronous in the target application. Stop as soon as it
+    # supplies text instead of paying a fixed delay on every invocation.
+    deadline = time.monotonic() + COPY_TIMEOUT
+    while True:
+        text = clipboard.paste()
+        if text:
+            return text
+        if time.monotonic() >= deadline:
+            return ''
+        time.sleep(COPY_POLL_INTERVAL)
+
+
+def paste_text(text, keyboard, clipboard):
+    clipboard.copy(text)
+    keyboard.hotkey('ctrl', 'v')
+    # XSync only acknowledges delivery to the X server, not the application's
+    # clipboard request. Keep the text available before restoring the buffer.
+    time.sleep(PASTE_SETTLE_TIME)
 
 
 def process_selection(change_case):
-    desktop_tools()
-    try:
-        time.sleep(0.1)
-        selected = get_selected_text()
+    keyboard, clipboard = desktop_tools()
+    keyboard.wait_for_modifiers_release()
+    # One transaction avoids restoring and reading the original clipboard
+    # between copying the selection and pasting its replacement.
+    with saved_text_clipboard(clipboard):
+        selected = get_selected_text(keyboard, clipboard)
         if not selected:
             return
         if change_case:
@@ -158,12 +152,10 @@ def process_selection(change_case):
         else:
             target = target_layout(selected)
             converted = switch_layout(selected, target)
-            # До вставки: язык уже соответствует преобразованному тексту.
-            # Если модуль недоступен, исходный текст остаётся выделенным.
+            # Before pasting: if the extension fails, leave the selection intact.
             set_input_source(target)
-        paste_text(converted)
-    finally:
-        release_modifiers()
+        if converted != selected:
+            paste_text(converted, keyboard, clipboard)
 
 
 @contextmanager
@@ -197,6 +189,9 @@ def main(argv=None):
             if not acquired:
                 return 0
             process_selection(args.case)
+    except KeyboardInterrupt:
+        print('lang-switcher: Операция отменена', file=sys.stderr)
+        return 130
     except Exception as error:
         print(f'lang-switcher: {error}', file=sys.stderr)
         return 1
